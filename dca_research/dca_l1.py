@@ -1,14 +1,13 @@
 import numpy as np
 import scipy.stats
 from scipy.optimize import minimize
-from scipy.signal.windows import hann
 
 import torch
 import torch.nn.functional as F
 
-from .cov_util import calc_cross_cov_mats_from_data, calc_pi_from_cross_cov_mats
-from .dca import DynamicalComponentsAnalysis, build_loss, ortho_reg_fn
-from pyuoi.lbfgs import fmin_lbfgs
+from dca.cov_util import calc_cross_cov_mats_from_data, calc_pi_from_cross_cov_mats
+from dca.dca import DynamicalComponentsAnalysis, build_loss, ortho_reg_fn
+from .lbfgs import fmin_lbfgs
 
 __all__ = ["L1DynamicalComponentsAnalysis"]
 
@@ -30,7 +29,7 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
 
     """
     def __init__(self, d=None, T=None, init="random_ortho", n_init=1, tol=1e-6,
-                 ortho_lambda=10., verbose=False, l1_lambda=0.,
+                 ortho_lambda=10., verbose=False, l1_lambda=0., reestimate=False,
                  device="cpu", dtype=torch.float64):
         self.d = d
         self.T = T
