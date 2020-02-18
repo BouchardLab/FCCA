@@ -42,6 +42,7 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
         self.dtype = dtype
         self.cross_covs = None
         self.l1_lambda = l1_lambda
+        self.reestimate = reestimate
 
     def _fit_projection(self, d=None, record_V=False):
         if d is None:
@@ -52,7 +53,7 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
             raise ValueError('Call estimate_cross_covariance() first.')
 
         N = self.cross_covs.shape[1]
-        if type(self.init) == str:
+        if isinstance(self.init, str):
             if self.init == "random":
                 V_init = np.random.normal(0, 1, (N, d))
             elif self.init == "random_ortho":
@@ -62,6 +63,8 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
                 V_init = V_init + np.random.normal(0, 1e-3, V_init.shape)
             else:
                 raise ValueError
+        elif isinstance(self.init, np.ndarray):
+            V_init = self.init.copy()
         else:
             raise ValueError
         V_init /= np.linalg.norm(V_init, axis=0, keepdims=True)
@@ -109,10 +112,19 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
             grad = v_flat_torch.grad
             g[:] = grad.detach().cpu().numpy().astype(float)
             return loss.detach().cpu().numpy().astype(float)
-        v = fmin_lbfgs(f_df, V_init.ravel(), orthantwise_c=self.l1_lambda, progress=callback)
+        v = fmin_lbfgs(f_df, V_init.ravel(), orthantwise_c=self.l1_lambda,
+                       progress=callback, epsilon=self.tol)
         v = v.reshape(N, d)
+        if self.reestimate:
+            mask = abs(v).sum(axis=0).astype(bool)
+            model = DynamicalComponentsAnalysis(d=d, T=self.T)
+            model.fit(X[:, mask])
+            V_opt = np.zeros_like(v)
+            V_opt[mask] = model.coef_
+            final_pi = calc_pi_from_cross_cov_mats(c, V_opt).detach().cpu().numpy()
+        else:
 
-        # Orthonormalize the basis prior to returning it
-        V_opt = scipy.linalg.orth(v)
-        final_pi = calc_pi_from_cross_cov_mats(c, V_opt).detach().cpu().numpy()
+            # Orthonormalize the basis prior to returning it
+            V_opt = scipy.linalg.orth(v)
+            final_pi = calc_pi_from_cross_cov_mats(c, V_opt).detach().cpu().numpy()
         return V_opt, final_pi

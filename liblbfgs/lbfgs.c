@@ -268,6 +268,8 @@ int lbfgs(
     lbfgsfloatval_t xnorm, gnorm, beta;
     lbfgsfloatval_t fx = 0.;
     lbfgsfloatval_t rate = 0.;
+    lbfgsfloatval_t denom = 0.;
+    lbfgsfloatval_t maxgrad = 0.;
     line_search_proc linesearch = line_search_morethuente;
 
     /* Construct a callback data. */
@@ -480,13 +482,14 @@ int lbfgs(
             goto lbfgs_exit;
         }
 
-        /* Compute x and g norms. */
+        /* Compute x and g norms.
         vec2norm(&xnorm, x, n);
         if (param.orthantwise_c == 0.) {
             vec2norm(&gnorm, g, n);
         } else {
             vec2norm(&gnorm, pg, n);
         }
+        */
 
         /* Report the progress. */
         if (cd.proc_progress) {
@@ -500,28 +503,49 @@ int lbfgs(
             The criterion is given by the following formula:
                 |g(x)| / \max(1, |x|) < \epsilon
          */
+        /*
         if (xnorm < 1.0) xnorm = 1.0;
         if (gnorm / xnorm <= param.epsilon) {
+         */
             /* Convergence. */
+        /*
             ret = LBFGS_SUCCESS;
             break;
+        }
+         */
+        if (param.orthantwise_c == 0.) {
+          maxgrad = fabs(g[0]);
+          for (i = 1;i < n;++i) {
+            maxgrad = fmax(maxgrad, fabs(g[i]));
+          }
+        } else {
+          maxgrad = fabs(pg[0]);
+          for (i = 1;i < n;++i) {
+            maxgrad = fmax(maxgrad, fabs(pg[i]));
+          }
+        }
+        if (maxgrad <=  param.epsilon) {
+          ret = LBFGS_SUCCESS;
+          goto lbfgs_exit;
         }
 
         /*
             Test for stopping criterion.
             The criterion is given by the following formula:
-                |f(past_x) - f(x)| / f(x) < \delta
+                f(past_x) - f(x) / max(|f(x)|, |f(past_x)|, 1) < \delta
          */
         if (pf != NULL) {
             /* We don't test the stopping criterion while k < past. */
             if (param.past <= k) {
                 /* Compute the relative improvement from the past. */
-                rate = (pf[k % param.past] - fx) / fx;
+                denom = fmax(fabs(fx), fabs(pf[k % param.past]));
+                denom = fmax(denom, 1.0);
+                rate = (pf[k % param.past] - fx) / denom;
 
                 /* The stopping criterion. */
-                if (fabs(rate) < param.delta) {
-                    ret = LBFGS_STOP;
-                    break;
+                if (rate <= param.delta) {
+                    ret = LBFGS_SUCCESS;
+                    goto lbfgs_exit;
                 }
             }
 
@@ -532,7 +556,7 @@ int lbfgs(
         if (param.max_iterations != 0 && param.max_iterations < k+1) {
             /* Maximum number of iterations. */
             ret = LBFGSERR_MAXIMUMITERATION;
-            break;
+            goto lbfgs_exit;
         }
 
         /*

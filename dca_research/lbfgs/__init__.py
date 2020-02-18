@@ -10,7 +10,7 @@ from ._lowlevel import LBFGS
 
 def fmin_lbfgs(f, x0, progress=None, args=(), orthantwise_c=0,
                orthantwise_start=0, orthantwise_end=-1, m=10,
-               epsilon=1e-5, past=0, delta=0., max_iterations=0,
+               epsilon=1e-5, past=1, delta=2.220446049250313e-09, max_iterations=0,
                line_search="default", max_linesearch=20, min_step=1e-20,
                max_step=1e+20, ftol=1e-4, wolfe=0.9, gtol=0.9, xtol=1e-30):
     """Minimize a function using LBFGS or OWL-QN
@@ -101,7 +101,7 @@ def fmin_lbfgs(f, x0, progress=None, args=(), orthantwise_c=0,
         This parameter determines the minimum rate of decrease of the
         objective function. The library stops iterations when the
         following condition is met:
-            (f' - f) / f < delta,
+            (f' - f) / max(|f|, |f'|, 1) <= delta,
         where f' is the objective value of `past` iterations ago, and f is
         the objective value of the current iteration.
         The default value is 0.
