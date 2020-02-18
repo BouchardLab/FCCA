@@ -12,7 +12,7 @@ from .lbfgs import fmin_lbfgs
 __all__ = ["L1DynamicalComponentsAnalysis"]
 
 class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
-    """Complexity Components Analysis.
+    """Dynamical Components Analysis.
 
     Runs CCA on multidimensional timeseries data X to discover a projection
     onto a d-dimensional subspace which maximizes the complexity of the d-dimensional
