@@ -30,6 +30,16 @@ def calc_pi_from_cov(cov_2_T_pi):
 
     cov_pp = cov_2_T_pi[:T_pi, :T_pi]
     cov_ff = cov_2_T_pi[T_pi:, T_pi:]
+    print(torch.allclose(cov_2_T_pi, cov_2_T_pi.t()))
+    print(torch.allclose(cov_pp, cov_pp.t()))
+    print(torch.allclose(cov_ff, cov_ff.t()))
+    print(torch.symeig(cov_2_T_pi)[0].min())
+    print(torch.symeig(cov_pp)[0].min())
+    print(torch.symeig(cov_ff)[0].min())
+    print(torch.symeig(cov_2_T_pi)[0].max())
+    print(torch.symeig(cov_pp)[0].max())
+    print(torch.symeig(cov_ff)[0].max())
+    print()
     if use_torch:
         logdet_pp_pi = torch.slogdet(cov_pp)[1]
         logdet_ff_pi = torch.slogdet(cov_ff)[1]
@@ -142,13 +152,18 @@ def project_cross_cov_mats(cross_cov_mats, proj_past, proj_future):
                                  torch.matmul(cross_cov_mats[:T],
                                               proj_past.unsqueeze(0)))
     else:
-        raise NotImplementedError
-        cross_cov_mats_proj = []
-        for i in range(2 * T):
-            cross_cov = cross_cov_mats[i]
-            cross_cov_proj = np.dot(proj.T, np.dot(cross_cov, proj))
-            cross_cov_mats_proj.append(cross_cov_proj)
-        cross_cov_mats_proj = np.stack(cross_cov_mats_proj)
+        cc_pp = []
+        cc_ff = []
+        cc_pf = []
+        for ii in range(2 * T):
+            cc = cross_cov_mats[ii]
+            if ii < T:
+                cc_pp.append(proj_past.T.dot(cc.dot(proj_past)))
+                cc_ff.append(proj_future.T.dot(cc.dot(proj_future)))
+            cc_pf.append(proj_past.T.dot(cc.dot(proj_future)))
+        cc_pp = np.stack(cc_pp)
+        cc_ff = np.stack(cc_ff)
+        cc_pf = np.stack(cc_pf)
 
     return cc_pp, cc_pf, cc_ff
 
