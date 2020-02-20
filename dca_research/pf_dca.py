@@ -6,7 +6,6 @@ import torch
 import torch.nn.functional as F
 
 from dca.dca import DynamicalComponentsAnalysis, ortho_reg_fn
-from .lbfgs import fmin_lbfgs
 
 __all__ = ["PastFutureDynamicalComponentsAnalysis"]
 
