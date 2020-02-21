@@ -82,6 +82,12 @@ def calc_cov_from_cross_cov_mats(cc_XX, cc_XY, cc_YY):
                 mat = cc_YY[abs(ii - jj)]
             else:
                 mat = cc_XY[abs(ii - jj)]
+                """
+                if use_torch:
+                    mat = mat.t()
+                else:
+                    mat = mat.T
+                 """
             if ii > jj:
                 cross_cov_mats_repeated.append(mat)
             else:
@@ -91,13 +97,17 @@ def calc_cov_from_cross_cov_mats(cc_XX, cc_XY, cc_YY):
                     cross_cov_mats_repeated.append(mat.T)
 
     if use_torch:
-        cov_tensor = torch.reshape(torch.stack(cross_cov_mats_repeated), (T, T, N, N))
-        cov = torch.cat([torch.cat([cov_ii_jj for cov_ii_jj in cov_ii], dim=1)
-                         for cov_ii in cov_tensor])
+        cov_rows = [torch.cat(cross_cov_mats_repeated[ii*T:(ii+1)*T], dim=0) for ii in range(T)]
+        cov = torch.cat(cov_rows, dim=1)
     else:
-        cov_tensor = np.reshape(np.stack(cross_cov_mats_repeated), (T, T, N, N))
-        cov = np.concatenate([np.concatenate([cov_ii_jj for cov_ii_jj in cov_ii], axis=1)
-                              for cov_ii in cov_tensor])
+        for ii in range(T):
+            for m in (cross_cov_mats_repeated[ii*T:(ii+1)*T]):
+                print(m.shape)
+            print()
+            print()
+            print()
+        cov_rows = [np.concatenate(cross_cov_mats_repeated[ii*T:(ii+1)*T], axis=0) for ii in range(T)]
+        cov = np.concatenate(cov_rows, axis=1)
 
     return cov
 
