@@ -29,16 +29,6 @@ def calc_pi_from_cov(cov_2_T_pi):
 
     cov_pp = cov_2_T_pi[:T_pi, :T_pi]
     cov_ff = cov_2_T_pi[T_pi:, T_pi:]
-    print(torch.allclose(cov_2_T_pi, cov_2_T_pi.t()))
-    print(torch.allclose(cov_pp, cov_pp.t()))
-    print(torch.allclose(cov_ff, cov_ff.t()))
-    print(torch.symeig(cov_2_T_pi)[0].min())
-    print(torch.symeig(cov_pp)[0].min())
-    print(torch.symeig(cov_ff)[0].min())
-    print(torch.symeig(cov_2_T_pi)[0].max())
-    print(torch.symeig(cov_pp)[0].max())
-    print(torch.symeig(cov_ff)[0].max())
-    print()
     if use_torch:
         logdet_pp_pi = torch.slogdet(cov_pp)[1]
         logdet_ff_pi = torch.slogdet(cov_ff)[1]
@@ -52,7 +42,7 @@ def calc_pi_from_cov(cov_2_T_pi):
     return PI
 
 
-def calc_cov_from_cross_cov_mats(cc_XX, cc_XY, cc_YY):
+def calc_cov_from_cross_cov_mats(cc_pp, cc_pf, cc_ff):
     """Calculates the N*T-by-N*T spatiotemporal covariance matrix based on
     T N-by-N cross-covariance matrices.
 
@@ -69,45 +59,33 @@ def calc_cov_from_cross_cov_mats(cc_XX, cc_XY, cc_YY):
         Big covariance matrix, stationary in time by construction.
     """
 
-    N = cc_XX.shape[1]
-    T = len(cc_XX) + len(cc_YY)
-    use_torch = isinstance(cc_XX, torch.Tensor)
+    N = cc_pp.shape[1]
+    T = len(cc_pp) + len(cc_ff)
+    use_torch = isinstance(cc_pp, torch.Tensor)
 
     cross_cov_mats_repeated = []
     for ii in range(T):
         for jj in range(T):
             if ii < (T // 2) and jj < (T // 2):
-                mat = cc_XX[abs(ii - jj)]
+                mat = cc_pp[abs(ii - jj)].T
             elif ii >= (T // 2) and jj >= (T // 2):
-                mat = cc_YY[abs(ii - jj)]
+                mat = cc_ff[abs(ii - jj)].T
             else:
-                mat = cc_XY[abs(ii - jj)]
-                """
-                if use_torch:
-                    mat = mat.t()
-                else:
-                    mat = mat.T
-                 """
+                mat = cc_pf[abs(ii - jj)-1]
             if ii > jj:
-                cross_cov_mats_repeated.append(mat)
-            else:
                 if use_torch:
                     cross_cov_mats_repeated.append(mat.t())
                 else:
                     cross_cov_mats_repeated.append(mat.T)
+            else:
+                cross_cov_mats_repeated.append(mat)
 
     if use_torch:
-        cov_rows = [torch.cat(cross_cov_mats_repeated[ii*T:(ii+1)*T], dim=0) for ii in range(T)]
-        cov = torch.cat(cov_rows, dim=1)
+        cov_rows = [torch.cat(cross_cov_mats_repeated[ii*T:(ii+1)*T], dim=1) for ii in range(T)]
+        cov = torch.cat(cov_rows, dim=0)
     else:
-        for ii in range(T):
-            for m in (cross_cov_mats_repeated[ii*T:(ii+1)*T]):
-                print(m.shape)
-            print()
-            print()
-            print()
-        cov_rows = [np.concatenate(cross_cov_mats_repeated[ii*T:(ii+1)*T], axis=0) for ii in range(T)]
-        cov = np.concatenate(cov_rows, axis=1)
+        cov_rows = [np.concatenate(cross_cov_mats_repeated[ii*T:(ii+1)*T], axis=1) for ii in range(T)]
+        cov = np.concatenate(cov_rows, axis=0)
 
     return cov
 
@@ -146,13 +124,22 @@ def project_cross_cov_mats(cross_cov_mats, proj_past, proj_future):
 
     T = cross_cov_mats.shape[0] // 2
     if use_torch:
-        if proj_past.shape[1] >= proj_future.shape[1]:
-            cc_p = torch.matmul(proj_past.t().unsqueeze(0), cross_cov_mats)
-            cc_pp = torch.matmul(cc_p[:T], proj_future.unsqueeze(0))
-            cc_pf = torch.matmul(cc_p, proj_future.unsqueeze(0))
-            cc_ff = torch.matmul(proj_future.t().unsqueeze(0),
-                                 torch.matmul(cross_cov_mats[:T],
-                                              proj_future.unsqueeze(0)))
+        """
+        #$if proj_past.shape[1] >= proj_future.shape[1]:
+        cc_p = torch.matmul(proj_past.t().unsqueeze(0), cross_cov_mats)
+        cc_pp = torch.matmul(cc_p[:T], proj_future.unsqueeze(0))
+        cc_pf = torch.matmul(cc_p, proj_future.unsqueeze(0))
+        """
+        cc_pp = torch.matmul(proj_past.t().unsqueeze(0),
+                             torch.matmul(cross_cov_mats[:T],
+                                          proj_past.unsqueeze(0)))
+        cc_pf = torch.matmul(proj_past.t().unsqueeze(0),
+                             torch.matmul(torch.transpose(cross_cov_mats[1:], 1, 2),
+                                          proj_future.unsqueeze(0)))
+        cc_ff = torch.matmul(proj_future.t().unsqueeze(0),
+                             torch.matmul(cross_cov_mats[:T],
+                                          proj_future.unsqueeze(0)))
+        """
         else:
             cc_f = torch.matmul(cross_cov_mats, proj_future.unsqueeze(0))
             cc_ff = torch.matmul(proj_future.t().unsqueeze(0), cc_f[:T])
@@ -160,16 +147,18 @@ def project_cross_cov_mats(cross_cov_mats, proj_past, proj_future):
             cc_pp = torch.matmul(proj_past.t().unsqueeze(0),
                                  torch.matmul(cross_cov_mats[:T],
                                               proj_past.unsqueeze(0)))
+                                              """
     else:
         cc_pp = []
         cc_ff = []
         cc_pf = []
-        for ii in range(2 * T):
+        for ii in range(T):
             cc = cross_cov_mats[ii]
-            if ii < T:
-                cc_pp.append(proj_past.T.dot(cc.dot(proj_past)))
-                cc_ff.append(proj_future.T.dot(cc.dot(proj_future)))
-            cc_pf.append(proj_past.T.dot(cc.dot(proj_future)))
+            cc_pp.append(proj_past.T.dot(cc.dot(proj_past)))
+            cc_ff.append(proj_future.T.dot(cc.dot(proj_future)))
+        for ii in range(1, 2*T):
+            cc = cross_cov_mats[ii]
+            cc_pf.append(proj_past.T.dot(cc.T.dot(proj_future)))
         cc_pp = np.stack(cc_pp)
         cc_ff = np.stack(cc_ff)
         cc_pf = np.stack(cc_pf)
@@ -415,3 +404,8 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
         else:
             y = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_)
         return y
+
+    def score(self):
+        """Calculate the PI of the training data for the DCA projection.
+        """
+        return calc_pi_from_cross_cov_mats(self.cross_covs, self.coef_[0], self.coef_[1])
