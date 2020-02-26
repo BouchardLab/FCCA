@@ -5,7 +5,7 @@ from scipy.optimize import minimize
 import torch
 import torch.nn.functional as F
 
-from dca.dca import DynamicalComponentsAnalysis, ortho_reg_fn
+from dca.dca import DynamicalComponentsAnalysis, ortho_reg_fn, init_coef
 
 __all__ = ["PastFutureDynamicalComponentsAnalysis"]
 
@@ -248,7 +248,7 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
     """
     def __init__(self, d=None, d_past=None, d_future=None, T=None, init="random_ortho",
                  n_init=1, tol=1e-6, ortho_lambda=10., verbose=False, use_scipy=True,
-                 device="cpu", dtype=torch.float64):
+                 device="cpu", dtype=torch.float64, rng_or_seed=None):
         self.d_past = d_past
         if d_past is None:
             self.d_past = d
@@ -265,6 +265,12 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
         self.dtype = dtype
         self.use_scipy = use_scipy
         self.cross_covs = None
+        if rng_or_seed is None:
+            self.rng = np.random
+        elif isinstance(rng_or_seed, np.random.RandomState):
+            self.rng = rng_or_seed
+        else:
+            self.rng = np.random.RandomState(rng_or_seed)
 
     def _fit_projection(self, d=None, d_past=None, d_future=None, record_V=False):
         """Fit the projection matrix.
@@ -291,25 +297,8 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
             raise ValueError('Call estimate_cross_covariance() first.')
 
         N = self.cross_covs.shape[1]
-        if type(self.init) == str:
-            if self.init == "random":
-                V_past = np.random.normal(0, 1, (N, d_past))
-                V_future = np.random.normal(0, 1, (N, d_future))
-            elif self.init == "random_ortho":
-                V_past = scipy.stats.ortho_group.rvs(N)[:, :d_past]
-                V_future = scipy.stats.ortho_group.rvs(N)[:, :d_future]
-            elif self.init == "uniform":
-                V_past = np.ones((N, d_past)) / np.sqrt(N)
-                V_past += np.random.normal(0, 1e-3, V_init.shape)
-                V_future = np.ones((N, d_future)) / np.sqrt(N)
-                V_future += np.random.normal(0, 1e-3, V_init.shape)
-            else:
-                raise ValueError
-        else:
-            raise ValueError
-        V_past /= np.linalg.norm(V_past, axis=0, keepdims=True)
-        V_future /= np.linalg.norm(V_past, axis=0, keepdims=True)
-
+        V_past = init_coef(N, d, self.rng, self.init)
+        V_future = init_coef(N, d, self.rng, self.init)
 
         c = self.cross_covs
         if not isinstance(c, torch.Tensor):
@@ -398,11 +387,14 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
             Data to estimate the cross covariance matrix.
         """
         if isinstance(X, list):
-            y = [(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_) for Xi in X]
+            yp = [(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[0]) for Xi in X]
+            yf = [(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[1]) for Xi in X]
         elif X.ndim == 3:
-            y = np.stack([(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_) for Xi in X])
+            yp = np.stack([(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[0]) for Xi in X])
+            yf = np.stack([(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[1]) for Xi in X])
         else:
-            y = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_)
+            yp = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_[0])
+            yf = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_[1])
         return y
 
     def score(self):
