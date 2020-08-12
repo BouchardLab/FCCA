@@ -6,7 +6,7 @@ import torch
 import torch.nn.functional as F
 
 from dca.cov_util import calc_cross_cov_mats_from_data, calc_pi_from_cross_cov_mats
-from dca.dca import DynamicalComponentsAnalysis, build_loss, ortho_reg_fn
+from dca.dca import DynamicalComponentsAnalysis, build_loss, ortho_reg_fn, init_coef
 from .lbfgs import fmin_lbfgs
 
 __all__ = ["L1DynamicalComponentsAnalysis"]
@@ -30,7 +30,7 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
     """
     def __init__(self, d=None, T=None, init="random_ortho", n_init=1, tol=1e-6,
                  ortho_lambda=10., verbose=False, l1_lambda=0., reestimate=False,
-                 device="cpu", dtype=torch.float64):
+                 device="cpu", dtype=torch.float64, rng_or_seed=None):
         self.d = d
         self.T = T
         self.init = init
@@ -43,6 +43,12 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
         self.cross_covs = None
         self.l1_lambda = l1_lambda
         self.reestimate = reestimate
+        if rng_or_seed is None:
+            self.rng = np.random
+        elif isinstance(rng_or_seed, np.random.RandomState):
+            self.rng = rng_or_seed
+        else:
+            self.rng = np.random.RandomState(rng_or_seed)
 
     def _fit_projection(self, d=None, record_V=False):
         if d is None:
@@ -53,22 +59,7 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
             raise ValueError('Call estimate_cross_covariance() first.')
 
         N = self.cross_covs.shape[1]
-        if isinstance(self.init, str):
-            if self.init == "random":
-                V_init = np.random.normal(0, 1, (N, d))
-            elif self.init == "random_ortho":
-                V_init = scipy.stats.ortho_group.rvs(N)[:, :d]
-            elif self.init == "uniform":
-                V_init = np.ones((N, d)) / np.sqrt(N)
-                V_init = V_init + np.random.normal(0, 1e-3, V_init.shape)
-            else:
-                raise ValueError
-        elif isinstance(self.init, np.ndarray):
-            V_init = self.init.copy()
-        else:
-            raise ValueError
-        V_init /= np.linalg.norm(V_init, axis=0, keepdims=True)
-
+        V_init = init_coef(N, d, self.rng, self.init)
         v = torch.tensor(V_init, requires_grad=True,
                          device=self.device, dtype=self.dtype)
 
