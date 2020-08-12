@@ -86,15 +86,22 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
                                             dtype=self.dtype)
                 v_torch = v_flat_torch.reshape(N, d)
                 #optimizer.zero_grad()
+                L1 = np.sum(abs(v_flat)) * self.l1_lambda
+                L0_frac = np.sum(np.equal(v_flat, 0.)) / float(v_flat.size)
                 loss = build_loss(c, d)(v_torch)
                 reg_val = ortho_reg_fn(v_torch, self.ortho_lambda)
-                loss_no_reg = loss - reg_val
-                loss = loss.detach().cpu().numpy()
+                loss = loss.detach().cpu().numpy() + L1
                 reg_val = reg_val.detach().cpu().numpy()
+                PI = -(loss - reg_val)
                 if record_V:
                     self.V_seq.append(v_flat.reshape(N, d))
                 if self.verbose:
-                    print("PI: {} nats, reg: {}".format(str(np.round(-loss, 4)), str(np.round(reg_val, 4))))
+                    string = "Loss: {}, PI: {} nats, reg: {}, L1: {}, L0-frac: {}"
+                    print(string.format(str(np.round(loss, 4)),
+                                        str(np.round(PI, 4)),
+                                        str(np.round(reg_val, 4)),
+                                        str(np.round(L1, 4)),
+                                        str(np.round(L0_frac, 4))))
 
 
             callback(V_init, None, None, None, None, None, None, None)
@@ -125,6 +132,7 @@ class L1DynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
         else:
 
             # Orthonormalize the basis prior to returning it
-            V_opt = scipy.linalg.orth(v)
+            #V_opt = scipy.linalg.orth(v)
+            V_opt = v / np.linalg.norm(v, axis=0, keepdims=True)
             final_pi = calc_pi_from_cross_cov_mats(c, V_opt).detach().cpu().numpy()
         return V_opt, final_pi

@@ -34,8 +34,8 @@ def calc_pi_from_cov(cov_2_T_pi):
         logdet_ff_pi = torch.slogdet(cov_ff)[1]
         logdet_2T_pi = torch.slogdet(cov_2_T_pi)[1]
     else:
-        logdet_pp_pi = np.linalg.slogdet(cov_pp_pi)[1]
-        logdet_ff_pi = np.linalg.slogdet(cov_ff_pi)[1]
+        logdet_pp_pi = np.linalg.slogdet(cov_pp)[1]
+        logdet_ff_pi = np.linalg.slogdet(cov_ff)[1]
         logdet_2T_pi = np.linalg.slogdet(cov_2_T_pi)[1]
 
     PI = .5 * (logdet_pp_pi + logdet_ff_pi - logdet_2T_pi)
@@ -308,7 +308,7 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
         else:
             raise ValueError
         V_past /= np.linalg.norm(V_past, axis=0, keepdims=True)
-        V_future /= np.linalg.norm(V_past, axis=0, keepdims=True)
+        V_future /= np.linalg.norm(V_future, axis=0, keepdims=True)
 
 
         c = self.cross_covs
@@ -326,7 +326,7 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
                                                 device=self.device,
                                                 dtype=self.dtype)
                     v_past = v_flat_torch[:N*d_past].reshape(N, d_past)
-                    v_future = v_flat_torch[N*d_past:].reshape(N, d_future)
+                    v_future = v_flat_torch[N*d_future:].reshape(N, d_future)
                     loss = build_loss(c, d, self.ortho_lambda)(v_past, v_future)
                     reg_val = ortho_reg_fn(v_past, self.ortho_lambda)
                     reg_val = reg_val + ortho_reg_fn(v_future, self.ortho_lambda)
@@ -348,7 +348,7 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
                                             device=self.device,
                                             dtype=self.dtype)
                 v_past = v_flat_torch[:N*d_past].reshape(N, d_past)
-                v_future = v_flat_torch[N*d_past:].reshape(N, d_future)
+                v_future = v_flat_torch[N*d_future:].reshape(N, d_future)
                 loss = build_loss(c, d, self.ortho_lambda)(v_past, v_future)
                 loss.backward()
                 grad = v_flat_torch.grad
@@ -359,7 +359,7 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
                            options={'disp': self.verbose, 'ftol': self.tol},
                            callback=callback)
             v_past = opt.x[:N*d_past].reshape(N, d_past)
-            v_future = opt.x[N*d_past:].reshape(N, d_future)
+            v_future = opt.x[N*d_future:].reshape(N, d_future)
         else:
             v = torch.tensor(V_init, requires_grad=True,
                              device=self.device, dtype=self.dtype)
@@ -398,12 +398,15 @@ class PastFutureDynamicalComponentsAnalysis(DynamicalComponentsAnalysis):
             Data to estimate the cross covariance matrix.
         """
         if isinstance(X, list):
-            y = [(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_) for Xi in X]
+            yp = [(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[0]) for Xi in X]
+            yf = [(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[1]) for Xi in X]
         elif X.ndim == 3:
-            y = np.stack([(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_) for Xi in X])
+            yp = np.stack([(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[0]) for Xi in X])
+            yf = np.stack([(Xi - Xi.mean(axis=0, keepdims=True)).dot(self.coef_[1]) for Xi in X])
         else:
-            y = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_)
-        return y
+            yp = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_[0])
+            yf = (X - X.mean(axis=0, keepdims=True)).dot(self.coef_[1])
+        return yp, yf
 
     def score(self):
         """Calculate the PI of the training data for the DCA projection.
