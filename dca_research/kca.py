@@ -28,7 +28,7 @@ def gen_toeplitz_from_blocks(blocks):
                                 for i in range(order)], dim=0)
     return block_toeplitz
 
-def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, return_covs=False):
+def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False, return_covs=False):
 
     T = cross_cov_mats.shape[0] - 1
     N = cross_cov_mats.shape[-1]
@@ -48,12 +48,16 @@ def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, return_covs=False):
     covf = cross_cov_mats[0]
     covpf = torch.cat(ccm_proj2)
     mmse_cov = covf - torch.t(covpf) @ torch.inverse(covp) @ covpf
+
+    if project_mmse:
+        mmse_cov = torch.t(proj) @ mmse_cov @ proj
+
     if return_covs:
         return torch.trace(mmse_cov), covp, covf, covpf
     else:
         return torch.trace(mmse_cov)
     
-def build_loss(cross_cov_mats, d, ortho_lambda=1.):
+def build_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), project_mmse=False):
     """Constructs a loss function which gives the (negative) predictive
     information in the projection of multidimensional timeseries data X onto a
     d-dimensional basis, where predictive information is computed using a
@@ -79,8 +83,12 @@ def build_loss(cross_cov_mats, d, ortho_lambda=1.):
 
     def loss(V_flat):
         V = V_flat.reshape(N, d)
-        reg_val = ortho_reg_fn(ortho_lambda, V)
-        return calc_mmse_from_cross_cov_mats(cross_cov_mats, V) + reg_val
+        ortho_reg_val = ortho_reg_fn(ortho_lambda, V)
+
+        mmse_fwd = calc_mmse_from_cross_cov_mats(cross_cov_mats, V, project_mmse=project_mmse)
+        mmsw_rev = calc_mmse_from_cross_cov_mats(torch.transpose(cross_cov_mats, 1, 2), V, project_mmse=project_mmse)
+
+        return causal_weights[0] * mmse_fwd + causal_weights[1] * mmsw_rev + ortho_reg_val
 
     return loss
 
@@ -142,7 +150,8 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
     coef_ : ndarray (N, d)
         Projection matrix from fit.
     """
-    def __init__(self, d=None, T=None, init="random_ortho", n_init=1, stride=1,
+    def __init__(self, d=None, T=None, causal_weights=(1, 0), project_mmse=False, 
+                 init="random_ortho", n_init=1, stride=1,
                  chunk_cov_estimate=None, tol=1e-6, ortho_lambda=10., verbose=False,
                  device="cpu", dtype=torch.float64, rng_or_seed=None):
 
@@ -151,6 +160,8 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
                              chunk_cov_estimate=chunk_cov_estimate, tol=tol, verbose=verbose,
                              device=device, dtype=dtype, rng_or_seed=rng_or_seed)
 
+        self.causal_weights = causal_weights
+        self.project_mmse = project_mmse
         self.ortho_lambda = ortho_lambda
         self.cross_covs = None
 
@@ -188,6 +199,7 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                                    reg_ops=reg_ops,
                                                    logger=self._logger)
         self.cross_covs = torch.tensor(cross_covs, device=self.device, dtype=self.dtype)
+
         delta_time = round((time.time() - start) / 60., 1)
         self._logger.info('Cross covariance estimate took {:0.1f} minutes.'.format(delta_time))
 
