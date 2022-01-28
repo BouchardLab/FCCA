@@ -28,7 +28,7 @@ def gen_toeplitz_from_blocks(blocks):
                                 for i in range(order)], dim=0)
     return block_toeplitz
 
-def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False, return_covs=False):
+def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False):
 
     T = cross_cov_mats.shape[0] - 1
     N = cross_cov_mats.shape[-1]
@@ -52,12 +52,9 @@ def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False,
     if project_mmse:
         mmse_cov = torch.t(proj) @ mmse_cov @ proj
 
-    if return_covs:
-        return torch.trace(mmse_cov), covp, covf, covpf
-    else:
-        return torch.trace(mmse_cov)
+    return mmse_cov
     
-def build_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), project_mmse=False):
+def build_loss(cross_cov_mats, d, ortho_lambda=1., project_mmse=False, loss_type='trace'):
     """Constructs a loss function which gives the (negative) predictive
     information in the projection of multidimensional timeseries data X onto a
     d-dimensional basis, where predictive information is computed using a
@@ -86,14 +83,21 @@ def build_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), projec
         ortho_reg_val = ortho_reg_fn(ortho_lambda, V)
 
         mmse_fwd = calc_mmse_from_cross_cov_mats(cross_cov_mats, V, project_mmse=project_mmse)
-        mmsw_rev = calc_mmse_from_cross_cov_mats(torch.transpose(cross_cov_mats, 1, 2), V, project_mmse=project_mmse)
+        mmse_rev = calc_mmse_from_cross_cov_mats(torch.transpose(cross_cov_mats, 1, 2), V, project_mmse=project_mmse)
 
-        return causal_weights[0] * mmse_fwd + causal_weights[1] * mmsw_rev + ortho_reg_val
-
+        if loss_type == 'trace':
+            return torch.trace(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
+        elif loss_type == 'fro':
+            return torch.linalg.norm(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
+        elif loss_type == 'logdet':
+            return torch.linalg.slogdet(torch.matmul(mmse_fwd, mmse_rev))[0] + ortho_reg_val
+        elif loss_type == 'additive':
+            K = torch.matmul(torch.t(V), mmse_rev)
+            return torch.trace(mmse_rev) + torch.trace(torch.chain_matmul(K, mmse_fwd, torch.t(K))) + ortho_reg_val
     return loss
 
 
-class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
+class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
     """Kalman Components Analysis. 
 
     Runs KCA on multidimensional timeseries data X to discover a projection
@@ -150,19 +154,20 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
     coef_ : ndarray (N, d)
         Projection matrix from fit.
     """
-    def __init__(self, d=None, T=None, causal_weights=(1, 0), project_mmse=False, 
+    def __init__(self, d=None, T=None, project_mmse=False, 
                  init="random_ortho", n_init=1, stride=1,
                  chunk_cov_estimate=None, tol=1e-6, ortho_lambda=10., verbose=False,
-                 device="cpu", dtype=torch.float64, rng_or_seed=None):
+                 device="cpu", dtype=torch.float64, rng_or_seed=None, 
+                 loss_type='trace'):
 
-        super(KalmanComponentsAnalysis,
+        super(LQGComponentsAnalysis,
               self).__init__(d=d, T=T, init=init, n_init=n_init, stride=stride,
                              chunk_cov_estimate=chunk_cov_estimate, tol=tol, verbose=verbose,
                              device=device, dtype=dtype, rng_or_seed=rng_or_seed)
 
-        self.causal_weights = causal_weights
         self.project_mmse = project_mmse
         self.ortho_lambda = ortho_lambda
+        self.loss_type = loss_type
         self.cross_covs = None
 
     def estimate_data_statistics(self, X, T=None, regularization=None, reg_ops=None):
@@ -249,7 +254,7 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                         device=self.device,
                                         dtype=self.dtype)
             v_torch = v_flat_torch.reshape(N, d)
-            loss = build_loss(c, d, self.ortho_lambda)(v_torch)
+            loss = build_loss(c, d, self.ortho_lambda, self.project_mmse, self.loss_type)(v_torch)
             return loss, v_flat_torch
         objective = ObjectiveWrapper(f_params)
 
@@ -267,7 +272,7 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
                     loss, v_flat_torch = objective.core_computations(v_flat,
                                                                      requires_grad=False)
                     v_torch = v_flat_torch.reshape(N, d)
-                    loss = build_loss(c, d, self.ortho_lambda)(v_torch)
+                    loss = build_loss(c, d, self.ortho_lambda, self.project_mmse, self.loss_type)(v_torch)
                     reg_val = ortho_reg_fn(self.ortho_lambda, v_torch)
                     loss = loss.detach().cpu().numpy()
                     reg_val = reg_val.detach().cpu().numpy()
@@ -290,11 +295,14 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
         V_opt = scipy.linalg.orth(v)
 
         # Return the negative as singleprojectionanalysis takes argmax of scores across initializations
-        final_score = -1*calc_mmse_from_cross_cov_mats(c, torch.tensor(V_opt)).detach().cpu().numpy()
+        mmse_fwd = calc_mmse_from_cross_cov_mats(c, torch.tensor(v), project_mmse=self.project_mmse)
+        mmse_rev = calc_mmse_from_cross_cov_mats(torch.transpose(c, 1, 2), torch.tensor(v), project_mmse=self.project_mmse)
+
+        final_score = self.score(V_opt)
 
         return V_opt, final_score
 
-    def score(self, X=None):
+    def score(self, coef=None, X=None):
         """Calculate the PI of data for the DCA projection.
 
         Parameters
@@ -308,9 +316,21 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
         else:
             cross_cov_mats = calc_cross_cov_mats_from_data(X, T=self.T + 1)
 
+        if coef is None:
+            coef = self.coef_
+        coef = torch.tensor(coef)
+
         cross_cov_mats = torch.tensor(cross_cov_mats)
-        mmse_fwd = calc_mmse_from_cross_cov_mats(cross_cov_mats, torch.tensor(self.coef_), project_mmse=self.project_mmse)
-        mmsw_rev = calc_mmse_from_cross_cov_mats(torch.transpose(cross_cov_mats, 1, 2), torch.tensor(self.coef_),
+        mmse_fwd = calc_mmse_from_cross_cov_mats(cross_cov_mats, coef, project_mmse=self.project_mmse)
+        mmse_rev = calc_mmse_from_cross_cov_mats(torch.transpose(cross_cov_mats, 1, 2), coef,
                                                  project_mmse=self.project_mmse)
 
-        return self.causal_weights[0] * mmse_fwd + self.causal_weights[1] * mmsw_rev 
+        if self.loss_type == 'trace':
+            return torch.trace(torch.matmul(mmse_fwd, mmse_rev))
+        elif self.loss_type == 'fro':
+            return torch.linalg.norm(torch.matmul(mmse_fwd, mmse_rev))
+        elif self.loss_type == 'logdet':
+            return torch.linalg.slogdet(torch.matmul(mmse_fwd, mmse_rev))[0]
+        elif self.loss_type == 'additive':
+            K = torch.matmul(torch.t(coef), mmse_rev)
+            return torch.trace(mmse_rev) + torch.trace(torch.chain_matmul(K, mmse_fwd, torch.t(K)))
