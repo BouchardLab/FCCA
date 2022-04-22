@@ -11,6 +11,9 @@ from dca.cov_util import calc_cross_cov_mats_from_data, calc_cov_from_cross_cov_
 
 logging.basicConfig()
 
+def null_callback(*args, **kwargs):
+    pass
+
 # Arrange cross-covariance matrices in Hankel form
 def gen_hankel_from_blocks(blocks):
 
@@ -57,7 +60,7 @@ def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False,
     else:
         return torch.trace(mmse_cov)
     
-def build_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), project_mmse=False):
+def build_mmse_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), project_mmse=False):
     """Constructs a loss function which gives the (negative) predictive
     information in the projection of multidimensional timeseries data X onto a
     d-dimensional basis, where predictive information is computed using a
@@ -91,7 +94,6 @@ def build_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), projec
         return causal_weights[0] * mmse_fwd + causal_weights[1] * mmsw_rev + ortho_reg_val
 
     return loss
-
 
 class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
     """Kalman Components Analysis. 
@@ -240,51 +242,7 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
         N = c.shape[1]
         V_init = init_coef(N, d, self.rng, self.init)
 
-        if not isinstance(c, torch.Tensor):
-            c = torch.tensor(c, device=self.device, dtype=self.dtype)
-
-        def f_params(v_flat, requires_grad=True):
-            v_flat_torch = torch.tensor(v_flat,
-                                        requires_grad=requires_grad,
-                                        device=self.device,
-                                        dtype=self.dtype)
-            v_torch = v_flat_torch.reshape(N, d)
-            loss = build_loss(c, d, self.ortho_lambda)(v_torch)
-            return loss, v_flat_torch
-        objective = ObjectiveWrapper(f_params)
-
-        def null_callback(*args, **kwargs):
-            pass
-
-        if self.verbose or record_V:
-            if record_V:
-                self.V_seq = [V_init]
-
-            def callback(v_flat, objective):
-                if record_V:
-                    self.V_seq.append(v_flat.reshape(N, d))
-                if self.verbose:
-                    loss, v_flat_torch = objective.core_computations(v_flat,
-                                                                     requires_grad=False)
-                    v_torch = v_flat_torch.reshape(N, d)
-                    loss = build_loss(c, d, self.ortho_lambda)(v_torch)
-                    reg_val = ortho_reg_fn(self.ortho_lambda, v_torch)
-                    loss = loss.detach().cpu().numpy()
-                    reg_val = reg_val.detach().cpu().numpy()
-                    PI = -(loss - reg_val)
-                    string = "Loss {}, PI: {} nats, reg: {}"
-                    self._logger.info(string.format(str(np.round(loss, 4)),
-                                                    str(np.round(PI, 4)),
-                                                    str(np.round(reg_val, 4))))
-
-            callback(V_init, objective)
-        else:
-            callback = null_callback
-
-        opt = minimize(objective.func, V_init.ravel(), method='L-BFGS-B', jac=objective.grad,
-                       options={'disp': self.verbose, 'ftol': self.tol},
-                       callback=lambda x: callback(x, objective))
-        v = opt.x.reshape(N, d)
+        v = self.mmse_descent(c, V_init, record_V)
 
         # Orthonormalize the basis prior to returning it
         V_opt = scipy.linalg.orth(v)
@@ -314,3 +272,315 @@ class KalmanComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                                  project_mmse=self.project_mmse)
 
         return self.causal_weights[0] * mmse_fwd + self.causal_weights[1] * mmsw_rev 
+
+    def mmse_descent(self, c, V_init, record_V=False):
+
+        d = V_init.shape[1]
+        N = c.shape[1]
+
+        if not isinstance(c, torch.Tensor):
+            c = torch.tensor(c, device=self.device, dtype=self.dtype)
+
+        def f_params(v_flat, requires_grad=True):
+            v_flat_torch = torch.tensor(v_flat,
+                                        requires_grad=requires_grad,
+                                        device=self.device,
+                                        dtype=self.dtype)
+            v_torch = v_flat_torch.reshape(N, d)
+            loss = build_mmse_loss(c, d, self.ortho_lambda, 
+                                   self.causal_weights, self.project_mmse)(v_torch)
+            return loss, v_flat_torch
+        objective = ObjectiveWrapper(f_params)
+
+        if self.verbose or record_V:
+            if record_V:
+                self.V_seq = [V_init]
+
+            def callback(v_flat, objective):
+                if record_V:
+                    self.V_seq.append(v_flat.reshape(N, d))
+                if self.verbose:
+                    loss, v_flat_torch = objective.core_computations(v_flat,
+                                                                        requires_grad=False)
+                    v_torch = v_flat_torch.reshape(N, d)
+                    loss = build_mmse_loss(c, d, self.ortho_lambda, 
+                                           self.causal_weights, self.project_mmse)(v_torch)
+                    reg_val = ortho_reg_fn(self.ortho_lambda, v_torch)
+                    loss = loss.detach().cpu().numpy()
+                    reg_val = reg_val.detach().cpu().numpy()
+                    mmse = (loss - reg_val)
+                    string = "Loss {}, reg: {}"
+                    self._logger.info(string.format(str(np.round(mmse, 4)),
+                                                    str(np.round(reg_val, 4))))
+
+            callback(V_init, objective)
+        else:
+            callback = null_callback
+
+        opt = minimize(objective.func, V_init.ravel(), method='L-BFGS-B', jac=objective.grad,
+                        options={'disp': self.verbose, 'ftol': self.tol},
+                        callback=lambda x: callback(x, objective))
+        v = opt.x.reshape(N, d)
+        return v
+ 
+def sparse_KCA_loss(ccm, V, W, U, L1, L2, alpha, rho1, rho2):
+
+    # MMSE portion
+    J = calc_mmse_from_cross_cov_mats(ccm, V)
+    
+    # Can explore a few different sparsity promoting penalties here, starting with just the l1 norm
+    g = torch.norm(W, 1)/torch.norm(U, 2)
+
+
+    return J + alpha * g + torch.trace(torch.matmul(torch.t(L1), V - W)) + torch.trace(torch.matmul(torch.t(L2), V - U)) + \
+           rho1/2 * torch.norm(V - W)**2 + rho2/2 * torch.norm(V - U)**2, J
+
+class SparseKCA(KalmanComponentsAnalysis):
+
+    def __init__(self, d=None, T=None, causal_weights=(1, 0), project_mmse=False, 
+                 opt_method='ADMM',
+                 alpha = 1, rho1=1, rho2=1, ADMM_iterations=100,
+                 init="random_ortho", n_init=1, stride=1,
+                 chunk_cov_estimate=None, tol=1e-6, verbose=False,
+                 device="cpu", dtype=torch.float64, rng_or_seed=None):
+
+        super(SparseKCA,
+              self).__init__(d=d, T=T, init=init, n_init=n_init, stride=stride,
+                             chunk_cov_estimate=chunk_cov_estimate, tol=tol, verbose=verbose,
+                             device=device, dtype=dtype, rng_or_seed=rng_or_seed)
+
+        self.cross_covs = None
+        self.opt_method = opt_method
+        assert(opt_method in ['ADMM', 'direct'])
+        self.alpha = alpha
+        self.rho1 = rho1
+        self.rho2 = rho2
+        self.n_iter = ADMM_iterations
+
+
+    def _fit_projection(self, d=None, T=None, record_coefs=False):
+        """Fit the projection matrix.
+
+        Parameters
+        ----------
+        d : int
+            Dimensionality of the projection (optional.)
+        T : int
+            T for PI calculation (optional). Default is `self.T`. If `T` is set here
+            it must be less than or equal to `self.T` or self.estimate_cross_covariance() must
+            be called with a larger `T`.
+        record_V : bool
+            If True, saves a copy of V at each optimization step. Default is False.
+        """
+        if d is None:
+            d = self.d
+        if d < 1:
+            raise ValueError
+        self.d_fit = d
+        if T is None:
+            T = self.T
+        if T < 1:
+            raise ValueError
+        if T > self.cross_covs.shape[0] - 1:
+            raise ValueError('T must less than or equal to the value when ' +
+                             '`estimate_cross_covariance()` was called.')
+        self.T_fit = T
+
+        if self.cross_covs is None:
+            raise ValueError('Call `estimate_cross_covariance()` first.')
+
+        c = self.cross_covs[:T + 1]
+        N = c.shape[1]
+        V_init = init_coef(N, d, self.rng, self.init)
+
+
+        loss_series = []
+
+        if self.opt_method == 'ADMM':
+
+            # ADMM loop
+            V = torch.tensor(V_init, dtype=self.dtype)
+            W = torch.tensor(V_init, dtype=self.dtype)
+            U = torch.tensor(V_init, dtype=self.dtype)
+
+            # Initialization unclear for dual variables
+            L1 = torch.zeros(V_init.shape, dtype=self.dtype)
+            L2 = torch.zeros(V_init.shape, dtype=self.dtype)
+
+            if record_coefs:
+                V_series = [V]
+                W_series = [W]
+                U_series = [U]
+                L1_series = [L1]
+                L2_series = [L2]
+
+            # See A SCALE-INVARIANT APPROACH FOR SPARSE SIGNAL RECOVERY
+            for i in range(self.n_iter):
+                V = self.V_update(c, V, W, U, L1, L2)
+                W = self.W_update(c, V, W, U, L1, L2)
+
+                # Simple proximal step
+                U = F.softshrink(V + 1/self.rho2 * L2, self.alpha/(self.rho2 * torch.norm(W)))
+
+                L1 += self.rho1 * (V - W)
+                L2 += self.rho2 * (V - U)
+
+                # Evaluate loss
+                loss_, mmse_ = sparse_KCA_loss(c, V, W, U, L1, L2, self.alpha, self.rho1, self.rho2)
+                loss_series.append(mmse_.detach().numpy())
+                # print('Overall Loss: %f, MMSE Loss: %f' % (loss_.detach().numpy(), mmse_.detach().numpy()))
+            
+                if record_coefs:
+                    V_series.append(V)
+                    W_series.append(W)
+                    U_series.append(U)
+                    L1_series.append(L1)
+                    L2_series.append(L2)
+
+            if record_coefs:
+                return V, W, U, L1, L2, loss_series, V_series, W_series, U_series, L1_series, L2_series    
+            else:
+                return V, W, U, L1, L2, loss_series
+
+        elif self.opt_method == 'direct':
+
+            if record_coefs:
+                V_series = [V_init]
+
+
+            # Directly incorporate the l1/2 loss term into black box bfgs
+            def f_params(v_flat, requires_grad=True):
+                v_flat_torch = torch.tensor(v_flat,
+                                            requires_grad=requires_grad,
+                                            device=self.device,
+                                            dtype=self.dtype)
+            
+                v_torch = v_flat_torch.reshape(N, d)
+                mmse_loss = build_mmse_loss(c, d, self.ortho_lambda, 
+                                        self.causal_weights, self.project_mmse)(v_torch)
+
+                # Additional terms in the augmented Lagrangian
+                reg = self.alpha * torch.norm(v_torch, 1)/torch.norm(v_torch, 2)
+
+                loss = mmse_loss + reg
+                return loss, v_flat_torch
+
+            objective = ObjectiveWrapper(f_params)
+            def callback(v_flat, objective):
+                loss, v_flat_torch = objective.core_computations(v_flat,
+                                                                    requires_grad=False)
+                v_torch = v_flat_torch.reshape(N, d)
+                mmse_loss = build_mmse_loss(c, d, self.ortho_lambda, 
+                                        self.causal_weights, self.project_mmse)(v_torch)
+                loss = mmse_loss + self.alpha * torch.norm(v_torch, 1)/torch.norm(v_torch, 2)
+                loss = loss.detach().numpy()
+                loss_series.append(mmse_loss.detach().numpy())
+                if record_coefs:
+                    V_series.append(v_torch.detach().numpy())                            
+                if self.verbose:
+                    string = "Loss {}"
+                    self._logger.info(string.format(str(np.round(loss, 4))))
+            callback(V_init, objective)
+
+            opt = minimize(objective.func, V_init.ravel(), method='L-BFGS-B', jac=objective.grad,
+                            options={'disp': self.verbose, 'ftol': self.tol},
+                            callback=lambda x: callback(x, objective))
+
+            V = opt.x.reshape(N, d)
+            if record_coefs:
+                return V, loss_series, V_series
+            else:
+                return V, loss_series
+
+
+    # analogous to mmse descent with additional Lagrangian terms
+    def V_update(self, c, V_init, W, U, L1, L2):
+        d = V_init.shape[1]
+        N = c.shape[1]
+        if not isinstance(c, torch.Tensor):
+            c = torch.tensor(c, device=self.device, dtype=self.dtype)
+
+        def f_params(v_flat, requires_grad=True):
+            v_flat_torch = torch.tensor(v_flat,
+                                        requires_grad=requires_grad,
+                                        device=self.device,
+                                        dtype=self.dtype)
+        
+            v_torch = v_flat_torch.reshape(N, d)
+            mmse_loss = build_mmse_loss(c, d, self.ortho_lambda, 
+                                   self.causal_weights, self.project_mmse)(v_torch)
+
+            # Additional terms in the augmented Lagrangian
+            l1 = torch.trace(torch.matmul(torch.t(L1), v_torch - W)) + torch.trace(torch.matmul(torch.t(L2), v_torch - U))
+            l2 = self.rho1/2 * torch.norm(v_torch - W)**2 + self.rho2/2 * torch.norm(v_torch - U)**2
+            loss = mmse_loss + l1 + l2
+
+            return loss, v_flat_torch
+
+        objective = ObjectiveWrapper(f_params)
+
+        if self.verbose:
+
+            def callback(v_flat, objective):
+                if self.verbose:
+                    loss, v_flat_torch = objective.core_computations(v_flat,
+                                                                        requires_grad=False)
+                    v_torch = v_flat_torch.reshape(N, d)
+                    loss = build_mmse_loss(c, d, self.ortho_lambda, 
+                                           self.causal_weights, self.project_mmse)(v_torch)
+                    l1 = torch.trace(torch.matmul(torch.t(L1), v_torch - W)) + torch.trace(torch.matmul(torch.t(L2), v_torch - U))
+                    l2 = self.rho1/2 * torch.norm(v_torch - W)**2 + self.rho2/2 * torch.norm(v_torch - U)**2
+                    loss = mmse_loss + l1 + l2
+                    loss = loss.detach().cpu().numpy()
+                    string = "Loss {}"
+                    self._logger.info(string.format(str(np.round(loss, 4))))
+            callback(V_init, objective)
+        else:
+            callback = null_callback
+
+        opt = minimize(objective.func, V_init.ravel(), method='L-BFGS-B', jac=objective.grad,
+                        options={'disp': self.verbose, 'ftol': self.tol},
+                        callback=lambda x: callback(x, objective))
+        V = opt.x.reshape(N, d)
+        return torch.tensor(V)
+
+    def W_update(self, c, V, W, U, L1, L2):
+
+        # W =torch.zeros(V.shape)
+
+        # # Update each row independenlty.
+        # for i in range(W.shape[0]):        
+        #     D = V[i, :] + 1/self.rho1 * L1[i, :]
+        #     vl1 = torch.norm(V[i, :], 1)        
+
+        #     # Special (rare) cases
+        #     if torch.allclose(D, torch.zeros(D.shape, dtype=self.dtype)):
+        #         raise ValueError
+        #     elif torch.norm(V[i, :], 1) == 0:
+        #         raise ValueError
+
+        #     # Requires solution of cubic equation
+        #     D_ = torch.norm(V[i, :], 1)/(self.rho1 * torch.norm(D))
+        #     C = np.cbrt((27 * D_ + 2 + np.sqrt((27 * D_ + 2)**2 - 4))/2)
+        #     tau = 1/3 + 1/3 * (C + 1/C)
+
+        #     W[i, :] = tau * D
+
+
+        D = V + 1/self.rho1 * L1
+        vl1 = torch.norm(V, 1)        
+
+        # Special (rare) cases
+        if torch.allclose(D, torch.zeros(D.shape, dtype=self.dtype)):
+            raise ValueError
+        elif torch.norm(V, 1) == 0:
+            raise ValueError
+
+        # Requires solution of cubic equation
+        D_ = torch.norm(V, 1)/(self.rho1 * torch.norm(D)**3)
+        C = np.cbrt((27 * D_ + 2 + np.sqrt((27 * D_ + 2)**2 - 4))/2)
+        tau = 1/3 + 1/3 * (C + 1/C)
+
+        W = tau * D
+
+        return W
