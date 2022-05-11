@@ -295,10 +295,8 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         V_opt = scipy.linalg.orth(v)
 
         # Return the negative as singleprojectionanalysis takes argmax of scores across initializations
-        mmse_fwd = calc_mmse_from_cross_cov_mats(c, torch.tensor(v), project_mmse=self.project_mmse)
-        mmse_rev = calc_mmse_from_cross_cov_mats(torch.transpose(c, 1, 2), torch.tensor(v), project_mmse=self.project_mmse)
 
-        final_score = self.score(V_opt)
+        final_score = -1*self.score(V_opt)
 
         return V_opt, final_score
 
