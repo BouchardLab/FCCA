@@ -206,6 +206,41 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
 
         return self
 
+
+    # Modified from dca base such that it takes the 
+    def fit_projection(self, d=None, T=None, n_init=None):
+        """Fit the projection matrix.
+
+        Parameters
+        ----------
+        d : int
+            Dimensionality of the projection (optional.)
+        T : int
+            T for PI calculation (optional). Default is `self.T`. If `T` is set here
+            it must be less than or equal to `self.T` or self.estimate_cross_covariance() must
+            be called with a larger `T`.
+        n_init : int
+            Number of random restarts (optional.)
+        """
+        if n_init is None:
+            n_init = self.n_init
+        scores = []
+        coefs = []
+        for ii in range(n_init):
+            start = time.time()
+            self._logger.info('Starting projection fig {} of {}.'.format(ii + 1, n_init))
+            coef, score = self._fit_projection(d=d, T=T)
+            delta_time = round((time.time() - start) / 60., 1)
+            self._logger.info('Projection fit {} of {} took {:0.1f} minutes.'.format(ii + 1,
+                                                                                     n_init,
+                                                                                     delta_time))
+            scores.append(score)
+            coefs.append(coef)
+        idx = np.argmax(scores)
+        self.scores = scores
+        self.coef_ = coefs[idx]
+
+
     def _fit_projection(self, d=None, T=None, record_V=False):
         """Fit the projection matrix.
 

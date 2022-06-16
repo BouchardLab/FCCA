@@ -13,6 +13,7 @@ from dca_research.cov_util import calc_mmse_from_cross_cov_mats
 logging.basicConfig()
 
 def null_callback(*args, **kwargs):
+    
     pass
 
 # Arrange cross-covariance matrices in Hankel form
