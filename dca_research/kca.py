@@ -8,6 +8,7 @@ import torch.nn.functional as F
 
 from dca.base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
 from dca.cov_util import calc_cross_cov_mats_from_data, calc_cov_from_cross_cov_mats
+from dca_research.cov_util import calc_mmse_from_cross_cov_mats
 
 logging.basicConfig()
 
@@ -30,35 +31,6 @@ def gen_toeplitz_from_blocks(blocks):
                                             for j in range(order)], dim=1) 
                                 for i in range(order)], dim=0)
     return block_toeplitz
-
-def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False, return_covs=False):
-
-    T = cross_cov_mats.shape[0] - 1
-    N = cross_cov_mats.shape[-1]
-
-    if proj is not None:
-        ccm_proj1 = torch.stack([torch.mm(torch.mm(torch.t(proj), cc), proj) for cc in cross_cov_mats[:-1, ...]])
-        ccm_proj2 = []
-
-        ccm_proj2 = [torch.mm(torch.t(proj), torch.t(cc)) for cc in cross_cov_mats[1:]]
-        ccm_proj2.reverse()
-    else:
-        ccm_proj1 = cross_cov_mats[:-1]
-        ccm_proj2 = [torch.t(cc) for cc in torch.flip(cross_cov_mats)[1:]]
-        ccm_proj2.reverse()
-
-    covp = calc_cov_from_cross_cov_mats(ccm_proj1)
-    covf = cross_cov_mats[0]
-    covpf = torch.cat(ccm_proj2)
-    mmse_cov = covf - torch.t(covpf) @ torch.inverse(covp) @ covpf
-
-    if project_mmse:
-        mmse_cov = torch.t(proj) @ mmse_cov @ proj
-
-    if return_covs:
-        return torch.trace(mmse_cov), covp, covf, covpf
-    else:
-        return torch.trace(mmse_cov)
     
 def build_mmse_loss(cross_cov_mats, d, ortho_lambda=1., causal_weights=(1, 0), project_mmse=False):
     """Constructs a loss function which gives the (negative) predictive

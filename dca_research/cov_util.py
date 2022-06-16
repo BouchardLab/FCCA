@@ -170,3 +170,36 @@ def calc_kl_from_cross_cov_mats(cross_cov_mats, proj=None, cholesky=True):
         kl = .5 * (trace + logdets - covf.shape[0])
 
     return kl
+
+def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False, return_covs=False):
+
+    T = cross_cov_mats.shape[0] - 1
+    N = cross_cov_mats.shape[-1]
+
+    if proj is not None:
+        ccm_proj1 = torch.stack([torch.mm(torch.mm(torch.t(proj), cc), proj) for cc in cross_cov_mats[:-1, ...]])
+        ccm_proj2 = []
+
+        ccm_proj2 = [torch.mm(torch.t(proj), torch.t(cc)) for cc in cross_cov_mats[1:]]
+        ccm_proj2.reverse()
+
+        covp = calc_cov_from_cross_cov_mats(ccm_proj1)
+        covf = cross_cov_mats[0]
+        covpf = torch.cat(ccm_proj2)
+
+    else:
+        cov = calc_cov_from_cross_cov_mats(cross_cov_mats)
+
+        covf = cov[-N:, -N:]
+        covp = cov[:T*N, :T*N]
+        covpf = cov[:T*N, -N:]
+
+    mmse_cov = covf - torch.t(covpf) @ torch.inverse(covp) @ covpf
+
+    if project_mmse:
+        mmse_cov = torch.t(proj) @ mmse_cov @ proj
+
+    if return_covs:
+        return torch.trace(mmse_cov), covp, covf, covpf
+    else:
+        return torch.trace(mmse_cov)
