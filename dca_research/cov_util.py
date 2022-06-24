@@ -200,6 +200,6 @@ def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False,
         mmse_cov = torch.t(proj) @ mmse_cov @ proj
 
     if return_covs:
-        return torch.trace(mmse_cov), covp, covf, covpf
+        return mmse_cov, covp, covf, covpf
     else:
-        return torch.trace(mmse_cov)
+        return mmse_cov
