@@ -7,7 +7,7 @@ import torch
 import torch.nn.functional as F
 
 from dca.base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
-from dca.cov_util import calc_cross_cov_mats_from_data, calc_cov_from_cross_cov_mats
+from dca.cov_util import calc_cross_cov_mats_from_data, calc_cov_from_cross_cov_mats, form_lag_matrix
 from dca_research.cov_util import calc_mmse_from_cross_cov_mats
 
 logging.basicConfig()
@@ -30,7 +30,8 @@ def gen_toeplitz_from_blocks(blocks):
     return block_toeplitz
 
     
-def build_loss(ccm_fwd, ccm_rev, d, ortho_lambda=1., project_mmse=False, loss_type='trace'):
+def build_loss(ccm_fwd, ccm_rev, d, ortho_lambda=1., project_mmse=False, loss_type='trace', 
+               lag=1, readout_strategy='lagged'):
     """Constructs a loss function which gives the (negative) predictive
     information in the projection of multidimensional timeseries data X onto a
     d-dimensional basis, where predictive information is computed using a
@@ -52,14 +53,23 @@ def build_loss(ccm_fwd, ccm_rev, d, ortho_lambda=1., project_mmse=False, loss_ty
        columns are basis vectors, and outputs the negative predictive information
        corresponding to that projection (plus regularization term).
     """
-    N = ccm_fwd.shape[1]
 
     def loss(V_flat):
-        V = V_flat.reshape(N, d)
-        ortho_reg_val = ortho_reg_fn(ortho_lambda, V)
 
-        mmse_fwd = calc_mmse_from_cross_cov_mats(ccm_fwd, V, project_mmse=project_mmse)    
-        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, V, project_mmse=project_mmse)
+        if readout_strategy == 'mixed':
+            N = ccm_fwd.shape[1]
+            Vlag = V_flat.reshape(N, d)
+        else:
+            N = ccm_fwd.shape[1]//lag
+            V = V_flat.reshape(N, d)
+            if readout_strategy == 'lagged':
+                Vlag = torch.tile(V, (lag, 1))
+            elif readout_strategy == 'sametime':
+                Vlag = torch.vstack([V, torch.tile(torch.zeros(V.shape), (lag - 1, 1))])
+
+        ortho_reg_val = ortho_reg_fn(ortho_lambda, Vlag)
+        mmse_fwd = calc_mmse_from_cross_cov_mats(ccm_fwd, Vlag, project_mmse=project_mmse)    
+        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, Vlag, project_mmse=project_mmse)
 
         if loss_type == 'trace':
             return torch.trace(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
@@ -134,7 +144,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
                  init="random_ortho", n_init=1, stride=1,
                  chunk_cov_estimate=None, tol=1e-6, ortho_lambda=10., verbose=False,
                  device="cpu", dtype=torch.float64, rng_or_seed=None, 
-                 loss_type='trace'):
+                 loss_type='trace', lag=1, readout_strategy='lagged', marginal_only=False):
 
         super(LQGComponentsAnalysis,
               self).__init__(d=d, T=T, init=init, n_init=n_init, stride=stride,
@@ -149,6 +159,55 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         self.ortho_lambda = ortho_lambda
         self.loss_type = loss_type
         self.cross_covs = None
+        assert(lag > 0 and isinstance(lag, int))
+        self.lag = lag
+        assert(readout_strategy in ['lagged', 'sametime', 'mixed'])
+        self.readout_strategy = readout_strategy
+
+        # Whether to only operate on the marginal autocorrelations (no cross-correlations)
+        self.marginal_only = marginal_only
+
+    def _estimate_data_statistics(self, X, T, regularization=None, reg_ops=None):
+        if self.lag > 1:
+            X = form_lag_matrix(X, self.lag)
+
+        if isinstance(X, list) or X.ndim == 3:
+            self.mean_ = np.concatenate(X).mean(axis=0, keepdims=True)
+        else:
+            self.mean_ = X.mean(axis=0, keepdims=True)
+
+
+        # Estimate only T + 1 autocovariances instead of 2T like in DCA
+        cross_covs = calc_cross_cov_mats_from_data(X, self.T + 1, mean=self.mean_,
+                                                   chunks=self.chunk_cov_estimate,
+                                                   stride=self.stride,
+                                                   rng=self.rng,
+                                                   regularization=regularization,
+                                                   reg_ops=reg_ops,
+                                                   logger=self._logger)
+        if self.normalize_reverse:
+            # Normalize X by its variance an reverse the direction of time
+            X = X @ np.linalg.inv(cross_covs[0])
+            X = X[::-1, :]
+            cross_covs_rev = calc_cross_cov_mats_from_data(X, self.T + 1, mean=self.mean_,
+                                                       chunks=self.chunk_cov_estimate,
+                                                       stride=self.stride,
+                                                       rng=self.rng,
+                                                       regularization=regularization,
+                                                       reg_ops=reg_ops,
+                                                       logger=self._logger)
+        else:
+            cross_covs_rev = np.transpose(cross_covs, 1, 2)
+
+        # Set each matrix to be diagonal-
+        if self.marginal_only:
+            cross_covs = np.array([np.diag(np.diag(c)) for c in cross_covs])
+            cross_covs_rev = np.array([np.diag(np.diag(c)) for c in cross_covs_rev])
+
+        cross_covs = torch.tensor(cross_covs, device=self.device, dtype=self.dtype)
+        cross_covs_rev = torch.tensor(cross_covs_rev, device=self.device, dtype=self.dtype)
+
+        return cross_covs, cross_covs_rev
 
     def estimate_data_statistics(self, X, T=None, regularization=None, reg_ops=None):
         """Estimate the cross covariance matrix from data.
@@ -170,36 +229,10 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
             self.T = T
         start = time.time()
         self._logger.info('Starting cross covariance estimate.')
-        if isinstance(X, list) or X.ndim == 3:
-            self.mean_ = np.concatenate(X).mean(axis=0, keepdims=True)
-        else:
-            self.mean_ = X.mean(axis=0, keepdims=True)
 
-        # Estimate only T + 1 autocovariances instead of 2T like in DCA
-        cross_covs = calc_cross_cov_mats_from_data(X, self.T + 1, mean=self.mean_,
-                                                   chunks=self.chunk_cov_estimate,
-                                                   stride=self.stride,
-                                                   rng=self.rng,
-                                                   regularization=regularization,
-                                                   reg_ops=reg_ops,
-                                                   logger=self._logger)
-        self.cross_covs = torch.tensor(cross_covs, device=self.device, dtype=self.dtype)
-
-        if self.normalize_reverse:
-            # Normalize X by its variance an reverse the direction of time
-            X = X @ np.linalg.inv(cross_covs[0])
-            X = X[::-1, :]
-            cross_covs = calc_cross_cov_mats_from_data(X, self.T + 1, mean=self.mean_,
-                                                       chunks=self.chunk_cov_estimate,
-                                                       stride=self.stride,
-                                                       rng=self.rng,
-                                                       regularization=regularization,
-                                                       reg_ops=reg_ops,
-                                                       logger=self._logger)
-
-            self.cross_covs_rev = torch.tensor(cross_covs, device=self.device, dtype=self.dtype)
-        else:
-            self.cross_covs_rev = torch.transpose(self.cross_covs, 1, 2)
+        cross_covs, cross_covs_rev = self._estimate_data_statistics(X, T, regularization, reg_ops)
+        self.cross_covs = cross_covs
+        self.cross_covs_rev = cross_covs_rev
 
         delta_time = round((time.time() - start) / 60., 1)
         self._logger.info('Cross covariance estimate took {:0.1f} minutes.'.format(delta_time))
@@ -274,7 +307,18 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
 
         c = self.cross_covs[:T + 1]
         crev = self.cross_covs_rev[:T + 1]
-        N = c.shape[1]
+
+        # Allow all coefficients to be optimized, mixing across timesteps
+        if self.readout_strategy == 'mixed':
+            N = c.shape[1]
+        else:
+            N = c.shape[1]//self.lag
+
+        # There are 2 possible implementations of a lagged state space. Either we (a) apply
+        # the readout vector to both lags, or we only apply it to the same timestep. In the
+        # former case, we simply stack V ontop of itself. In the latter case, we append a vector
+        # of zeros
+
         V_init = init_coef(N, d, self.rng, self.init)
 
         if not isinstance(c, torch.Tensor):
@@ -286,7 +330,10 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                         device=self.device,
                                         dtype=self.dtype)
             v_torch = v_flat_torch.reshape(N, d)
-            loss = build_loss(c, crev, d, self.ortho_lambda, self.project_mmse, self.loss_type)(v_torch)
+
+            loss = build_loss(c, crev, d, ortho_lambda=self.ortho_lambda,
+                              project_mmse=self.project_mmse, loss_type=self.loss_type,
+                              lag = self.lag, readout_strategy=self.readout_strategy)(v_torch)            
             return loss, v_flat_torch
         objective = ObjectiveWrapper(f_params)
 
@@ -304,7 +351,9 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
                     loss, v_flat_torch = objective.core_computations(v_flat,
                                                                      requires_grad=False)
                     v_torch = v_flat_torch.reshape(N, d)
-                    loss = build_loss(c, crev, d, self.ortho_lambda, self.project_mmse, self.loss_type)(v_torch)
+                    loss = build_loss(c, crev, d, ortho_lambda=self.ortho_lambda,
+                                    project_mmse=self.project_mmse, loss_type=self.loss_type,
+                                    lag = self.lag, readout_strategy=self.readout_strategy)(v_torch)            
                     reg_val = ortho_reg_fn(self.ortho_lambda, v_torch)
                     loss = loss.detach().cpu().numpy()
                     reg_val = reg_val.detach().cpu().numpy()
@@ -345,39 +394,12 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
             ccm_fwd = self.cross_covs
             ccm_rev = self.cross_covs_rev
         else:
-            if isinstance(X, list) or X.ndim == 3:
-                self.mean_ = np.concatenate(X).mean(axis=0, keepdims=True)
-            else:
-                self.mean_ = X.mean(axis=0, keepdims=True)
-
-            ccm_fwd = calc_cross_cov_mats_from_data(X, T=self.T + 1)
-            if self.normalize_reverse:
-                # Normalize X by its variance an reverse the direction of time
-                X = X @ np.linalg.inv(ccm_fwd[0])
-                X = X[::-1, :]
-                ccm_rev = calc_cross_cov_mats_from_data(X, T=self.T + 1)
-            else:
-                ccm_rev = np.transpose(ccm_fwd, (0, 2, 1))
-
+            ccm_fwd, ccm_rev = self._estimate_data_statistics(X, self.T)
 
         if coef is None:
             coef = self.coef_
         coef = torch.tensor(coef)
+        loss = build_loss(ccm_fwd, ccm_rev, coef.shape[1], ortho_lambda=0, project_mmse=self.project_mmse,
+                          loss_type=self.loss_type, lag=self.lag, readout_strategy=self.readout_strategy)(coef)
 
-        ccm_fwd = torch.tensor(ccm_fwd)
-        ccm_rev = torch.tensor(ccm_rev)
-
-        mmse_fwd = calc_mmse_from_cross_cov_mats(ccm_fwd, coef, project_mmse=self.project_mmse)
-        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, coef,
-                                                 project_mmse=self.project_mmse)
-
-        if self.loss_type == 'trace':
-            return torch.trace(torch.matmul(mmse_fwd, mmse_rev))
-        elif self.loss_type == 'fro':
-            return torch.linalg.norm(torch.matmul(mmse_fwd, mmse_rev))
-        elif self.loss_type == 'logdet':
-            return torch.linalg.slogdet(torch.matmul(mmse_fwd, mmse_rev))[0]
-        # Specifiy relative weighting in the loss type string
-        elif 'additive' in self.loss_type:
-            alpha = float(self.loss_type.split('additive')[-1])/100
-            return alpha * torch.trace(mmse_rev) + (1 - alpha) * torch.trace(mmse_fwd)
+        return loss
