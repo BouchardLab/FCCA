@@ -69,7 +69,11 @@ def build_loss(ccm_fwd, ccm_rev, d, ortho_lambda=1., project_mmse=False, loss_ty
 
         ortho_reg_val = ortho_reg_fn(ortho_lambda, Vlag)
         mmse_fwd = calc_mmse_from_cross_cov_mats(ccm_fwd, Vlag, project_mmse=project_mmse)    
-        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, Vlag, project_mmse=project_mmse)
+
+        # Key change 06/28/22: In the reverse time direction, the readout is taken to be y = C Pi x_a = C x. 
+        # This is implemented here by scaling Vlag by ccm_fwd[0]
+        Vlag_rev = torch.matmul(ccm_fwd[0], Vlag)
+        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, Vlag_rev, project_mmse=project_mmse)
 
         if loss_type == 'trace':
             return torch.trace(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
