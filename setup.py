@@ -47,4 +47,5 @@ setup(
     long_description=long_description,
     install_requires=requirements,
     ext_modules=ext_modules,
+    packages=['dca_research'],
     cmdclass={'build_ext': custom_build_ext})
