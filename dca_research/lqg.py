@@ -243,7 +243,6 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
 
         return self
 
-
     # Modified from dca base such that it takes the 
     def fit_projection(self, d=None, T=None, n_init=None):
         """Fit the projection matrix.

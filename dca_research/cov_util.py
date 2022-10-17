@@ -188,6 +188,7 @@ def calc_mmse_from_cross_cov_mats(cross_cov_mats, proj=None, project_mmse=False,
         covpf = torch.cat(ccm_proj2)
 
     else:
+        raise ValueError('This block is suspect')
         cov = calc_cov_from_cross_cov_mats(cross_cov_mats)
 
         covf = cov[-N:, -N:]
