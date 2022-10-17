@@ -54,8 +54,8 @@ $ pip install -e . -r requirements.txt
 ## Usage
 
 ```python
-$ from FCCA.fcca import LQGComponentsAnalysis as LQGCA
-$ LQGCA(T=4, d=2).fit(X)
+from FCCA.fcca import LQGComponentsAnalysis as LQGCA
+LQGCA(T=4, d=2).fit(X)
 ```
 
 See the docstring for LQGCA or contact me directly at ankit_kumar@berkeley.edu if there are any questions/technical issues.
