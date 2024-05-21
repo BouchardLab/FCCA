@@ -5,9 +5,8 @@ from scipy.optimize import minimize
 import torch
 import torch.nn.functional as F
 
-from dca.base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
-from dca.cov_util import calc_cross_cov_mats_from_data
-from FCCA.cov_util import calc_mmse_from_cross_cov_mats
+from base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
+from cov_util import calc_mmse_from_cross_cov_mats, calc_cross_cov_mats_from_data
 
 logging.basicConfig()
     
