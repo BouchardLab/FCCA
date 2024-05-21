@@ -5,6 +5,7 @@ Feedback Controllability Components Analysis
 
 Assusming you are in the FCCA directory:
 
+
 ```bash
 $ conda env update --file environment.yml
 $ pip install -e .

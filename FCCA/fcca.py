@@ -5,8 +5,8 @@ from scipy.optimize import minimize
 import torch
 import torch.nn.functional as F
 
-from base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
-from cov_util import calc_mmse_from_cross_cov_mats, calc_cross_cov_mats_from_data
+from .base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
+from .cov_util import calc_mmse_from_cross_cov_mats, calc_cross_cov_mats_from_data
 
 logging.basicConfig()
     
