@@ -266,8 +266,7 @@ def calc_cross_cov_mats_from_data(X, T, mean=None, chunks=None, stride=1,
         for Xi in X:
             if len(Xi) <= T:
                 raise ValueError('T must be shorter than the length of the shortest ' +
-                                 'timeseries. If you are using the DCA model, 2 * DCA.T must be ' +
-                                 'shorter than the shortest timeseries.')
+                                 'timeseries.')
         if mean is None:
             mean = np.concatenate(X).mean(axis=0, keepdims=True)
         X = [Xi - mean for Xi in X]
@@ -292,8 +291,7 @@ def calc_cross_cov_mats_from_data(X, T, mean=None, chunks=None, stride=1,
     else:
         if len(X) <= T:
             raise ValueError('T must be shorter than the length of the shortest ' +
-                             'timeseries. If you are using the DCA model, 2 * DCA.T must be ' +
-                             'shorter than the shortest timeseries.')
+                             'timeseries.')
         if mean is None:
             mean = X.mean(axis=0, keepdims=True)
         X = X - mean

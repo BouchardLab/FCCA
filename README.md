@@ -3,15 +3,7 @@ Feedback Controllability Components Analysis
 
 ## Installation
 
-```bash
-# use ssh
-$ git clone git@github.com:BouchardLab/FCCA.git
-# or use https
-$ git clone https://github.com/BouchardLab/FCCA.git
-$ cd FCCA
-```
-
-Then:
+Assusming you are in the FCCA directory:
 
 ```bash
 $ conda env update --file environment.yml
