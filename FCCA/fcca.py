@@ -6,63 +6,27 @@ import torch
 import torch.nn.functional as F
 
 from dca.base import SingleProjectionComponentsAnalysis, ortho_reg_fn, init_coef, ObjectiveWrapper
-from dca.cov_util import calc_cross_cov_mats_from_data, form_lag_matrix
+from dca.cov_util import calc_cross_cov_mats_from_data
 from FCCA.cov_util import calc_mmse_from_cross_cov_mats
 
 logging.basicConfig()
-
-# Arrange cross-covariance matrices in Hankel form
-def gen_hankel_from_blocks(blocks):
-
-    order = int(blocks.shape[0]/2)
-    block_hankel = torch.cat([torch.cat([blocks[i + j + 1, ...] for j in range(order)]) for i in range(order)], dim=1)
-    return block_hankel
-
-def gen_toeplitz_from_blocks(blocks):
     
-    order = int(blocks.shape[0])
-    toeplitz_block_index = lambda idx: blocks[idx, ...] if idx >= 0 else blocks[-1*idx, ...].T
-
-    block_toeplitz = torch.cat([torch.cat([toeplitz_block_index(j - i) 
-                                            for j in range(order)], dim=1) 
-                                for i in range(order)], dim=0)
-    return block_toeplitz
-
-    
-def build_loss(ccm_fwd, ccm_rev, d, ortho_lambda=1., project_mmse=False, loss_type='trace', 
-               lag=1, readout_strategy='lagged'):
+def build_loss(ccm_fwd, ccm_rev, d, ortho_lambda=1., project_mmse=False):
 
     def loss(V_flat):
 
-        if readout_strategy == 'mixed':
-            N = ccm_fwd.shape[1]
-            Vlag = V_flat.reshape(N, d)
-        else:
-            N = ccm_fwd.shape[1]//lag
-            V = V_flat.reshape(N, d)
-            if readout_strategy == 'lagged':
-                Vlag = torch.tile(V, (lag, 1))
-            elif readout_strategy == 'sametime':
-                Vlag = torch.vstack([V, torch.tile(torch.zeros(V.shape), (lag - 1, 1))])
+        N = ccm_fwd.shape[1]
+        V = V_flat.reshape(N, d)
+        ortho_reg_val = ortho_reg_fn(ortho_lambda, V)
+        mmse_fwd = calc_mmse_from_cross_cov_mats(ccm_fwd, V, project_mmse=project_mmse)    
 
-        ortho_reg_val = ortho_reg_fn(ortho_lambda, Vlag)
-        mmse_fwd = calc_mmse_from_cross_cov_mats(ccm_fwd, Vlag, project_mmse=project_mmse)    
+        # In the reverse time direction, the readout is taken to be y = C Pi x_a = C x. 
+        # This is implemented here by scaling V by ccm_fwd[0]
+        V_rev = torch.matmul(ccm_fwd[0], V)
+        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, V_rev, project_mmse=project_mmse)
 
-        # Key change 06/28/22: In the reverse time direction, the readout is taken to be y = C Pi x_a = C x. 
-        # This is implemented here by scaling Vlag by ccm_fwd[0]
-        Vlag_rev = torch.matmul(ccm_fwd[0], Vlag)
-        mmse_rev = calc_mmse_from_cross_cov_mats(ccm_rev, Vlag_rev, project_mmse=project_mmse)
+        return torch.trace(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
 
-        if loss_type == 'trace':
-            return torch.trace(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
-        elif loss_type == 'fro':
-            return torch.linalg.norm(torch.matmul(mmse_fwd, mmse_rev)) + ortho_reg_val
-        elif loss_type == 'logdet':
-            return torch.linalg.slogdet(torch.matmul(mmse_fwd, mmse_rev))[0] + ortho_reg_val
-        # Specifiy relative weighting in the loss type string
-        elif 'additive' in loss_type:
-            alpha = float(loss_type.split('additive')[-1])/100
-            return alpha * torch.trace(mmse_rev) + (1 - alpha) * torch.trace(mmse_fwd) + ortho_reg_val
     return loss
 
 class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
@@ -135,15 +99,10 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         # These should not be changed
         self.project_mmse = False
         self.normalize_reverse = True
-        self.lag = 1
-        self.readout_strategy = 'lagged'
         # Whether to only operate on the marginal autocorrelations (no cross-correlations)
         self.marginal_only = False
-        self.loss_type  = 'trace'
 
     def _estimate_data_statistics(self, X, T, regularization=None, reg_ops=None):
-        if self.lag > 1:
-            X = form_lag_matrix(X, self.lag)
 
         if isinstance(X, list) or X.ndim == 3:
             self.mean_ = np.concatenate(X).mean(axis=0, keepdims=True)
@@ -151,7 +110,6 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
             self.mean_ = X.mean(axis=0, keepdims=True)
 
 
-        # Estimate only T + 1 autocovariances instead of 2T like in DCA
         cross_covs = calc_cross_cov_mats_from_data(X, self.T + 1, mean=self.mean_,
                                                    chunks=self.chunk_cov_estimate,
                                                    stride=self.stride,
@@ -213,7 +171,6 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
 
         return self
 
-    # Modified from dca base such that it takes the 
     def fit_projection(self, d=None, T=None, n_init=None):
         """Fit the projection matrix.
 
@@ -281,16 +238,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         c = self.cross_covs[:T + 1]
         crev = self.cross_covs_rev[:T + 1]
 
-        # Allow all coefficients to be optimized, mixing across timesteps
-        if self.readout_strategy == 'mixed':
-            N = c.shape[1]
-        else:
-            N = c.shape[1]//self.lag
-
-        # There are 2 possible implementations of a lagged state space. Either we (a) apply
-        # the readout vector to both lags, or we only apply it to the same timestep. In the
-        # former case, we simply stack V ontop of itself. In the latter case, we append a vector
-        # of zeros
+        N = c.shape[1]
 
         V_init = init_coef(N, d, self.rng, self.init)
 
@@ -305,8 +253,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
             v_torch = v_flat_torch.reshape(N, d)
 
             loss = build_loss(c, crev, d, ortho_lambda=self.ortho_lambda,
-                              project_mmse=self.project_mmse, loss_type=self.loss_type,
-                              lag = self.lag, readout_strategy=self.readout_strategy)(v_torch)            
+                              project_mmse=self.project_mmse)(v_torch)            
             return loss, v_flat_torch
         objective = ObjectiveWrapper(f_params)
 
@@ -325,8 +272,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                                                      requires_grad=False)
                     v_torch = v_flat_torch.reshape(N, d)
                     loss = build_loss(c, crev, d, ortho_lambda=self.ortho_lambda,
-                                    project_mmse=self.project_mmse, loss_type=self.loss_type,
-                                    lag = self.lag, readout_strategy=self.readout_strategy)(v_torch)            
+                                    project_mmse=self.project_mmse)(v_torch)            
                     reg_val = ortho_reg_fn(self.ortho_lambda, v_torch)
                     loss = loss.detach().cpu().numpy()
                     reg_val = reg_val.detach().cpu().numpy()
@@ -372,7 +318,6 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         if coef is None:
             coef = self.coef_
         coef = torch.tensor(coef)
-        loss = build_loss(ccm_fwd, ccm_rev, coef.shape[1], ortho_lambda=0, project_mmse=self.project_mmse,
-                          loss_type=self.loss_type, lag=self.lag, readout_strategy=self.readout_strategy)(coef)
+        loss = build_loss(ccm_fwd, ccm_rev, coef.shape[1], ortho_lambda=0, project_mmse=self.project_mmse)(coef)
 
         return loss
