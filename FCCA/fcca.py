@@ -113,7 +113,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                                    chunks=self.chunk_cov_estimate,
                                                    stride=self.stride,
                                                    rng=self.rng,
-                                                   regularization=regularization,
+                                                   ##regularization=regularization,
                                                    reg_ops=reg_ops,
                                                    logger=self._logger)
         if self.normalize_reverse:
@@ -124,7 +124,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
                                                        chunks=self.chunk_cov_estimate,
                                                        stride=self.stride,
                                                        rng=self.rng,
-                                                       regularization=regularization,
+                                                       ##regularization=regularization,
                                                        reg_ops=reg_ops,
                                                        logger=self._logger)
         else:
