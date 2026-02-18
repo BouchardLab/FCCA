@@ -89,7 +89,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         super(LQGComponentsAnalysis,
               self).__init__(d=d, T=T, init=init, n_init=n_init, stride=stride,
                              chunk_cov_estimate=chunk_cov_estimate, tol=tol, verbose=verbose,
-                             device=device, dtype=dtype, rng_or_seed=rng_or_seed)
+                             device=device, dtype=dtype, rng_or_seed=rng_or_seed, marginal_only=False)
 
 
         self.ortho_lambda = ortho_lambda
@@ -99,7 +99,7 @@ class LQGComponentsAnalysis(SingleProjectionComponentsAnalysis):
         self.project_mmse = False
         self.normalize_reverse = True
         # Whether to only operate on the marginal autocorrelations (no cross-correlations)
-        self.marginal_only = False
+        self.marginal_only = marginal_only
 
     def _estimate_data_statistics(self, X, T, regularization=None, reg_ops=None):
 
